@@ -2,26 +2,41 @@
 Refinitiv API接続モジュール
 
 Refinitiv Data Platform APIを使用してデータを取得
+PostgreSQLキャッシュ機能を実装
 """
 import refinitiv.data as rd
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Optional
 import logging
+from .db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
 class RefinitivClient:
-    """Refinitiv API クライアント"""
+    """Refinitiv API クライアント（DBキャッシュ機能付き）"""
 
-    def __init__(self, app_key: str):
+    def __init__(self, app_key: str, use_cache: bool = True, db_config: dict = None):
         """
         Args:
             app_key: Refinitiv API キー
+            use_cache: データベースキャッシュを使用するか
+            db_config: データベース接続設定（Noneの場合は環境変数から読み込み）
         """
         self.app_key = app_key
         self._session = None
+        self.use_cache = use_cache
+        self.db_manager = None
+
+        if use_cache:
+            try:
+                self.db_manager = DatabaseManager(db_config)
+                self.db_manager.connect()
+                logger.info("データベースキャッシュ機能を有効化")
+            except Exception as e:
+                logger.warning(f"データベース接続失敗、キャッシュ無効化: {e}")
+                self.use_cache = False
 
     def connect(self):
         """APIセッションを開始"""
@@ -44,6 +59,10 @@ class RefinitivClient:
             logger.info("Refinitiv API切断完了")
         except Exception as e:
             logger.error(f"Refinitiv API切断失敗: {e}")
+
+        # データベース接続も切断
+        if self.db_manager:
+            self.db_manager.disconnect()
 
     def get_universe_constituents(self, universe: str = "0#.TOPXP") -> List[str]:
         """
@@ -84,7 +103,7 @@ class RefinitivClient:
         interval: str = "5min"
     ) -> Optional[pd.DataFrame]:
         """
-        分足データを取得
+        分足データを取得（DBキャッシュ優先）
 
         Args:
             symbol: 銘柄コード（例: '7203.T'）
@@ -95,6 +114,31 @@ class RefinitivClient:
         Returns:
             OHLCV データフレーム
         """
+        # 1. DBキャッシュから取得を試みる
+        if self.use_cache and self.db_manager:
+            cached_data = self.db_manager.get_intraday_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval
+            )
+
+            if cached_data is not None and not cached_data.empty:
+                logger.info(f"{symbol}: DBキャッシュから{len(cached_data)}行を取得 ✓")
+                # ログに記録
+                self.db_manager.log_fetch(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    interval=interval,
+                    source='cache',
+                    records_count=len(cached_data)
+                )
+                return cached_data
+
+        # 2. キャッシュにない場合、APIから取得
+        logger.info(f"{symbol}: DBキャッシュにデータなし、APIから取得...")
+
         try:
             # 分足データを取得
             data = rd.get_history(
@@ -128,10 +172,28 @@ class RefinitivClient:
             data = data[available_cols]
 
             logger.info(
-                f"{symbol}: {len(data)} 本の足を取得 "
+                f"{symbol}: APIから{len(data)}行を取得 "
                 f"({start_date.date()} - {end_date.date()})"
             )
-            logger.info(f"取得したカラム: {list(data.columns)}")
+
+            # 3. 取得したデータをDBに保存
+            if self.use_cache and self.db_manager and not data.empty:
+                saved_count = self.db_manager.save_intraday_data(
+                    symbol=symbol,
+                    data=data,
+                    interval=interval
+                )
+                logger.info(f"{symbol}: {saved_count}行をDBに保存 ✓")
+
+                # ログに記録
+                self.db_manager.log_fetch(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    interval=interval,
+                    source='api',
+                    records_count=len(data)
+                )
 
             return data
 
