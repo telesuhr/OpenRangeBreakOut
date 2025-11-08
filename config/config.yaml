@@ -1,0 +1,52 @@
+# バックテスト設定
+backtest:
+  start_date: "2025-01-01"
+  end_date: "2025-11-08"
+  initial_capital: 10000000  # 1000万円
+
+# 戦略パラメータ
+strategy:
+  # レンジ定義時間
+  range_start_time: "09:05"
+  range_end_time: "09:15"
+
+  # エントリーウィンドウ
+  entry_start_time: "09:15"
+  entry_end_time: "10:00"
+
+  # エグジット条件
+  profit_target: null  # 利益目標なし（15:00終値で決済）
+  stop_loss: 0.01      # 1% 損切りのみ
+
+  # 強制決済時刻
+  force_exit_time: "15:00"
+
+# 取引コスト
+costs:
+  commission_rate: 0.001  # 片道0.1%
+  slippage: 0.0           # スリッページ未考慮
+
+# 市場フィルター
+market:
+  target_exchange: "PRIME"  # 東証プライム
+  exclude_limit_up: true    # ストップ高除外
+  exclude_limit_down: true  # ストップ安除外
+
+  # 流動性フィルター（未使用）
+  min_volume: null
+  min_value: null
+
+# ポジション管理
+position:
+  max_positions: null  # 制限なし
+  position_sizing: "equal"  # 均等配分
+
+# Refinitiv API設定
+refinitiv:
+  app_key: null  # 環境変数から読み込み
+  universe: "0#.TOPXP"  # 東証プライムのユニバース
+
+# パフォーマンス評価
+performance:
+  risk_free_rate: 0.001  # リスクフリーレート（0.1%）
+  benchmark: ".N225"      # ベンチマーク（日経平均）
