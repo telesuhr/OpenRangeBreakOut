@@ -165,7 +165,7 @@ class BacktestEngine:
             symbol=symbol,
             start_date=start_time,
             end_date=end_time,
-            interval="5min"
+            interval="1min"
         )
 
         if data is None or data.empty:

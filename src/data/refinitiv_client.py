@@ -100,7 +100,7 @@ class RefinitivClient:
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        interval: str = "5min"
+        interval: str = "1min"
     ) -> Optional[pd.DataFrame]:
         """
         分足データを取得（DBキャッシュ優先）

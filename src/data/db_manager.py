@@ -54,7 +54,7 @@ class DatabaseManager:
         self,
         symbol: str,
         data: pd.DataFrame,
-        interval: str = '5min'
+        interval: str = '1min'
     ) -> int:
         """
         分足データをデータベースに保存
@@ -113,7 +113,7 @@ class DatabaseManager:
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        interval: str = '5min'
+        interval: str = '1min'
     ) -> Optional[pd.DataFrame]:
         """
         分足データをデータベースから取得
@@ -151,7 +151,14 @@ class DatabaseManager:
                 columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
             )
             df.set_index('timestamp', inplace=True)
-            
+
+            # Decimal型をfloat型に変換
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = df[col].astype(float)
+
+            # volumeはintに変換（NULL値は0に）
+            df['volume'] = df['volume'].fillna(0).astype(int)
+
             logger.info(f"{symbol}: DBから{len(df)}行を取得")
             return df
             
@@ -201,7 +208,7 @@ class DatabaseManager:
     def get_cached_date_range(
         self,
         symbol: str,
-        interval: str = '5min'
+        interval: str = '1min'
     ) -> Optional[tuple]:
         """
         キャッシュされているデータの日付範囲を取得
