@@ -1,0 +1,104 @@
+# パラメータ最適化設定ファイル
+#
+# 使い方:
+#   python optimize_parameters.py --param profit_target
+#   python optimize_parameters.py --param stop_loss
+#   python optimize_parameters.py --param range_duration
+#   python optimize_parameters.py --all  # 全パラメータのグリッドサーチ
+
+# 最適化対象パラメータの定義
+parameters:
+  # 利益確定ライン（現在null = 無し）
+  profit_target:
+    values: [0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04]
+    labels: ["1.0%", "1.5%", "2.0%", "2.5%", "3.0%", "3.5%", "4.0%"]
+    description: "利益確定ライン（大きめ）"
+    default: 0.02
+
+  # 損切りライン（既に0.75%が最適と判明）
+  stop_loss:
+    values: [0.005, 0.0075, 0.01, 0.0125, 0.015, 0.0175, 0.02]
+    labels: ["0.5%", "0.75%", "1.0%", "1.25%", "1.5%", "1.75%", "2.0%"]
+    description: "損切りライン"
+    default: 0.005  # 利益確定0.5%に合わせて同じに設定
+
+  # レンジ計測時間の長さ（分）
+  range_duration:
+    values: [5, 10, 15, 20]
+    labels: ["5分", "10分", "15分", "20分"]
+    description: "レンジ計測時間（分）"
+    default: 10  # 現在は09:05-09:15の10分
+    # 注意: range_start_timeは固定で09:05とする
+
+  # エントリーウィンドウの長さ（分）
+  entry_window:
+    values: [15, 30, 45, 60, 90]
+    labels: ["15分", "30分", "45分", "60分", "90分"]
+    description: "エントリーウィンドウ（分）"
+    default: 45  # 現在は09:15-10:00の45分
+
+  # 強制決済時刻
+  force_exit_time:
+    values: ["14:00", "14:30", "15:00"]
+    labels: ["14:00", "14:30", "15:00"]
+    description: "強制決済時刻"
+    default: "15:00"
+
+# 固定パラメータ（最適化しない）
+fixed:
+  # バックテスト期間
+  start_date: "2025-08-01"
+  end_date: "2025-10-31"
+
+  # 初期資金
+  initial_capital: 10000000
+
+  # レンジ計測開始時刻（固定）
+  range_start_time: "09:05"
+
+  # エントリー開始時刻（レンジ終了直後）
+  # 実際の時刻はrange_durationから自動計算
+
+  # 手数料
+  commission_rate: 0.001
+
+# 最適化モード
+optimization:
+  # モード選択: single_param（単一パラメータ）または grid_search（全組み合わせ）
+  mode: "single_param"
+
+  # 評価指標（プライマリ）
+  primary_metric: "total_return"  # total_pnl, total_return, win_rate, sharpe_ratio
+
+  # 評価指標（セカンダリ）- タイブレーク用
+  secondary_metrics:
+    - "total_pnl"
+    - "win_rate"
+
+  # 結果の表示数
+  top_n_results: 10
+
+  # 並列処理
+  parallel: false  # 将来の拡張用
+
+# セクターフィルタ（オプション）
+sectors:
+  # nullの場合は全セクター、リスト指定で特定セクターのみ
+  filter: ["テクノロジー・通信"]  # テクノロジー銘柄のみに絞る
+
+  # セクター別分析を実施するか
+  sector_analysis: true
+
+# 出力設定
+output:
+  # 結果保存ディレクトリ
+  results_dir: "results/optimization"
+
+  # CSVファイル名テンプレート
+  csv_template: "{param_name}_optimization_{timestamp}.csv"
+
+  # ログファイル
+  log_file: "results/optimization/optimization.log"
+
+  # 詳細レポート生成
+  detailed_report: true
