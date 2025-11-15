@@ -6,6 +6,7 @@
 """
 import sys
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 import yaml
@@ -161,6 +162,16 @@ def backfill_extended_hours(db_manager, client, symbol, start_date, end_date):
 
         except Exception as e:
             logger.error(f"{current_date}: エラー - {e}")
+            # レート制限エラーの場合はスクリプトを終了
+            if "429" in str(e) or "Too many requests" in str(e):
+                logger.error("=== レート制限エラー検出 ===")
+                logger.error("APIレート制限に達しました。数時間待ってから再実行してください。")
+                logger.error(f"処理完了: {symbol} の {processed_days}日分")
+                logger.error(f"残り: {total_days - processed_days - skipped_days}日分")
+                # 接続クローズ
+                client.disconnect()
+                db_manager.disconnect()
+                sys.exit(1)
 
         current_date += timedelta(days=1)
 
