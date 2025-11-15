@@ -176,6 +176,15 @@ class BacktestEngine:
             logger.debug(f"{symbol}: データなし")
             return
 
+        # ストップ高/ストップ安チェック（エントリー見送り判定）
+        limit_check = client.check_limit_up_down(symbol, date)
+        if limit_check['is_limit_up']:
+            logger.warning(f"{symbol}: ストップ高のためエントリー見送り")
+            return
+        if limit_check['is_limit_down']:
+            logger.warning(f"{symbol}: ストップ安のためエントリー見送り")
+            return
+
         # レンジ計算
         try:
             range_high, range_low = self.detector.calculate_range(data)
