@@ -157,14 +157,13 @@ class BacktestEngine:
             date: 対象日
         """
         # 分足データ取得（UTC時刻で指定）
-        # JST 09:00からforce_exit_timeまで（通常は15:30）
-        # force_exit_timeをUTC時刻に変換（JST - 9時間）
+        # JST 09:00 = UTC 00:00 から force_exit_time（既にUTC）まで
         start_time = datetime(date.year, date.month, date.day, 0, 0)  # JST 09:00 = UTC 00:00
 
-        # force_exit_timeからUTC時刻を計算
-        force_exit_hour = self.force_exit_time.hour - 9  # JST→UTC変換
-        force_exit_minute = self.force_exit_time.minute
-        end_time = datetime(date.year, date.month, date.day, force_exit_hour, force_exit_minute)
+        # force_exit_timeは既にUTC時刻なのでそのまま使用
+        end_time = datetime(date.year, date.month, date.day,
+                           self.force_exit_time.hour,
+                           self.force_exit_time.minute)
 
         data = client.get_intraday_data(
             symbol=symbol,
@@ -262,10 +261,10 @@ class BacktestEngine:
             # 終値で決済（その銘柄の最後の取引価格を使用）
             exit_price = self.last_prices.get(position.symbol, position.entry_price)
 
-            # force_exit_timeをUTC時刻に変換して決済時刻とする
-            force_exit_hour = self.force_exit_time.hour - 9  # JST→UTC変換
-            force_exit_minute = self.force_exit_time.minute
-            exit_time = datetime(current_date.year, current_date.month, current_date.day, force_exit_hour, force_exit_minute)
+            # force_exit_timeは既にUTC時刻なのでそのまま使用
+            exit_time = datetime(current_date.year, current_date.month, current_date.day,
+                                self.force_exit_time.hour,
+                                self.force_exit_time.minute)
 
             self._close_position(position, exit_price, exit_time, 'day_end')
 
