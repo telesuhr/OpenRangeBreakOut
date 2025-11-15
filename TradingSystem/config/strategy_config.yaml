@@ -115,7 +115,7 @@ orb_strategy:
 
   # 強制決済時刻（JST時刻）
   # この時刻に達すると全ポジションを強制的に決済
-  force_exit_time: "15:00"
+  force_exit_time: "15:30"
 
   # 利益目標（パーセンテージ、例: 0.04 = 4%）
   profit_target: 0.04
