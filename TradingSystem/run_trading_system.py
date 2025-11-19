@@ -171,7 +171,20 @@ def main():
         logger.info(f"オープンレンジ: {config['orb_strategy']['open_range']['start_time']} - {config['orb_strategy']['open_range']['end_time']}")
         logger.info(f"エントリー時間: {config['orb_strategy']['entry_window']['start_time']} - {config['orb_strategy']['entry_window']['end_time']}")
         logger.info(f"利益目標: {config['orb_strategy']['profit_target'] * 100:.2f}%")
-        logger.info(f"損切り: {config['orb_strategy']['stop_loss'] * 100:.2f}%")
+
+        # ストップロス設定の表示
+        stop_loss_config = config['orb_strategy']['stop_loss']
+        if isinstance(stop_loss_config, dict):
+            mode = stop_loss_config.get('mode', 'fixed')
+            if mode == 'fixed':
+                logger.info(f"損切り: {stop_loss_config['fixed']['value'] * 100:.2f}% (固定)")
+            elif mode == 'atr':
+                logger.info(f"損切り: ATRベース (倍率: {stop_loss_config['atr']['multiplier']})")
+            elif mode == 'atr_adaptive':
+                logger.info(f"損切り: ATR適応型 (ボラティリティに応じて自動調整)")
+        else:
+            # 後方互換性
+            logger.info(f"損切り: {stop_loss_config * 100:.2f}% (固定)")
 
         # Refinitivクライアントを初期化
         logger.info("\nRefinitivクライアントを初期化中...")
@@ -227,7 +240,7 @@ def main():
                 entry_start=entry_start_utc,
                 entry_end=entry_end_utc,
                 profit_target=orb_params['profit_target'],
-                stop_loss=orb_params['stop_loss'],
+                stop_loss=orb_params['stop_loss'],  # 辞書またはfloat値を渡す
                 force_exit_time=force_exit_utc,
                 commission_rate=config['capital']['commission_rate']
             )

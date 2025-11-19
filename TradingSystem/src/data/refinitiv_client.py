@@ -374,3 +374,50 @@ class RefinitivClient:
         except Exception as e:
             logger.error(f"{symbol} のストップ高/安チェックエラー: {e}")
             return {'is_limit_up': False, 'is_limit_down': False}
+
+    def get_daily_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> Optional[pd.DataFrame]:
+        """
+        日足データを取得（市場フィルター用）
+
+        Args:
+            symbol: 銘柄コード（例: .N225, .TOPX）
+            start_date: 開始日
+            end_date: 終了日
+
+        Returns:
+            日足データのDataFrame（index=date, columns=[open, high, low, close, volume]）
+        """
+        try:
+            # Refinitiv APIで日足データを取得
+            df = rd.get_history(
+                universe=symbol,
+                fields=['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME'],
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d'),
+                interval='daily'  # 日足
+            )
+
+            if df is None or len(df) == 0:
+                logger.warning(f"{symbol}: 日足データなし")
+                return None
+
+            # カラム名を標準化
+            df = df.rename(columns={
+                'OPEN': 'open',
+                'HIGH': 'high',
+                'LOW': 'low',
+                'CLOSE': 'close',
+                'VOLUME': 'volume'
+            })
+
+            logger.debug(f"{symbol}: 日足データ {len(df)}日分取得")
+            return df
+
+        except Exception as e:
+            logger.error(f"{symbol} 日足データ取得エラー: {e}")
+            return None

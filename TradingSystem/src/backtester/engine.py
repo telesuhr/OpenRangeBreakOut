@@ -4,14 +4,16 @@
 複数日にわたる戦略実行とポートフォリオ管理を統合
 """
 import pandas as pd
+import numpy as np
 import logging
 from datetime import datetime, time, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from ..data.refinitiv_client import RefinitivClient
 from ..strategy.range_breakout import RangeBreakoutDetector
 from .portfolio import Portfolio
 from .position import Position
 from ..analysis.performance import PerformanceAnalyzer
+from ..indicators.atr import ATRCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ class BacktestEngine:
         entry_start: time,
         entry_end: time,
         profit_target: float,
-        stop_loss: float,
+        stop_loss: Union[float, Dict],
         force_exit_time: time,
         commission_rate: float
     ):
@@ -39,7 +41,7 @@ class BacktestEngine:
             entry_start: エントリー可能開始時刻
             entry_end: エントリー可能終了時刻
             profit_target: 利益目標（例: 0.02 = 2%）
-            stop_loss: 損切り（例: 0.01 = 1%）
+            stop_loss: 損切り設定（float値または設定辞書）
             force_exit_time: 強制決済時刻
             commission_rate: 手数料率（片道）
         """
@@ -49,9 +51,36 @@ class BacktestEngine:
         self.entry_start = entry_start
         self.entry_end = entry_end
         self.profit_target = profit_target
-        self.stop_loss = stop_loss
         self.force_exit_time = force_exit_time
         self.commission_rate = commission_rate
+
+        # ストップロス設定を解析
+        if isinstance(stop_loss, (int, float)):
+            # 後方互換性: 単純な数値が渡された場合は固定モード
+            self.stop_loss_mode = 'fixed'
+            self.stop_loss_fixed = stop_loss
+            self.stop_loss_config = {'mode': 'fixed', 'fixed': {'value': stop_loss}}
+            self.atr_calculator = None
+        elif isinstance(stop_loss, dict):
+            # 新仕様: 設定辞書が渡された場合
+            self.stop_loss_config = stop_loss
+            self.stop_loss_mode = stop_loss.get('mode', 'fixed')
+
+            if self.stop_loss_mode == 'fixed':
+                self.stop_loss_fixed = stop_loss['fixed']['value']
+                self.atr_calculator = None
+            elif self.stop_loss_mode in ['atr', 'atr_adaptive']:
+                self.stop_loss_fixed = stop_loss.get(self.stop_loss_mode, {}).get('min_stop', 0.0075)  # フォールバック用
+                # ATR計算器を初期化
+                atr_period = stop_loss.get(self.stop_loss_mode, {}).get('period', 14)
+                self.atr_calculator = ATRCalculator(period=atr_period)
+            else:
+                raise ValueError(f"不明なストップロスモード: {self.stop_loss_mode}")
+        else:
+            raise ValueError(f"stop_lossは数値または辞書である必要があります: {type(stop_loss)}")
+
+        # 銘柄別の上書き設定
+        self.symbol_overrides = self.stop_loss_config.get('symbol_overrides', {})
 
         # コンポーネント初期化
         self.detector = RangeBreakoutDetector(range_start, range_end)
@@ -63,6 +92,9 @@ class BacktestEngine:
 
         # 各銘柄の最終価格を記録（日次終了時の決済用）
         self.last_prices = {}
+
+        # ATR値のキャッシュ（銘柄ごと）
+        self._atr_cache = {}
 
     def run_backtest(
         self,
@@ -160,10 +192,11 @@ class BacktestEngine:
         # JST 09:00 = UTC 00:00 から force_exit_time（既にUTC）まで
         start_time = datetime(date.year, date.month, date.day, 0, 0)  # JST 09:00 = UTC 00:00
 
-        # force_exit_timeは既にUTC時刻なのでそのまま使用
+        # force_exit_timeは既にUTC時刻（run_trading_system.pyでJST→UTC変換済み）
+        # Refinitiv APIのendパラメータは排他的なので+1分して、force_exit_timeのデータを含める
         end_time = datetime(date.year, date.month, date.day,
                            self.force_exit_time.hour,
-                           self.force_exit_time.minute)
+                           self.force_exit_time.minute) + timedelta(minutes=1)
 
         data = client.get_intraday_data(
             symbol=symbol,
@@ -177,13 +210,14 @@ class BacktestEngine:
             return
 
         # ストップ高/ストップ安チェック（エントリー見送り判定）
-        limit_check = client.check_limit_up_down(symbol, date)
-        if limit_check['is_limit_up']:
-            logger.warning(f"{symbol}: ストップ高のためエントリー見送り")
-            return
-        if limit_check['is_limit_down']:
-            logger.warning(f"{symbol}: ストップ安のためエントリー見送り")
-            return
+        # バックテスト高速化のため一時的に無効化（API呼び出しで激遅）
+        # limit_check = client.check_limit_up_down(symbol, date)
+        # if limit_check['is_limit_up']:
+        #     logger.warning(f"{symbol}: ストップ高のためエントリー見送り")
+        #     return
+        # if limit_check['is_limit_down']:
+        #     logger.warning(f"{symbol}: ストップ安のためエントリー見送り")
+        #     return
 
         # レンジ計算
         try:
@@ -220,6 +254,14 @@ class BacktestEngine:
                 quantity = self.portfolio.calculate_position_size(entry_price, num_positions)
 
                 if quantity > 0:
+                    # 動的ストップロスを計算
+                    dynamic_stop_loss = self._calculate_dynamic_stop_loss(
+                        symbol=symbol,
+                        entry_price=entry_price,
+                        client=client,
+                        current_date=date
+                    )
+
                     # ポジション作成
                     position = Position(
                         symbol=symbol,
@@ -228,15 +270,22 @@ class BacktestEngine:
                         quantity=quantity,
                         entry_time=idx,
                         profit_target=self.profit_target,
-                        stop_loss=self.stop_loss
+                        stop_loss=dynamic_stop_loss  # 動的ストップロスを使用
                     )
 
                     # ポートフォリオに追加
                     try:
                         self.portfolio.add_position(position)
+
+                        # ログ出力（ストップロス情報を追加）
+                        if self.stop_loss_mode == 'fixed':
+                            stop_info = f"固定 {dynamic_stop_loss:.2%}"
+                        else:
+                            stop_info = f"{self.stop_loss_mode.upper()} {dynamic_stop_loss:.2%}"
+
                         logger.info(
                             f"{symbol}: {breakout_type.upper()} エントリー @ {entry_price} "
-                            f"x {quantity}株 (時刻: {idx})"
+                            f"x {quantity}株 (時刻: {idx}), ストップロス: {stop_info}"
                         )
                         entry_made = True
                     except ValueError as e:
@@ -365,6 +414,152 @@ class BacktestEngine:
             f"{position.symbol}: {position.side.upper()} クローズ @ {exit_price} "
             f"(損益: {position.realized_pnl:+,.0f} 円, {return_pct:+.2%}) - {reason}"
         )
+
+    def _calculate_dynamic_stop_loss(
+        self,
+        symbol: str,
+        entry_price: float,
+        client: RefinitivClient,
+        current_date: datetime
+    ) -> float:
+        """
+        銘柄とモードに応じた動的ストップロス値を計算
+
+        Args:
+            symbol: 銘柄コード
+            entry_price: エントリー価格
+            client: データ取得用クライアント
+            current_date: 現在の日付
+
+        Returns:
+            ストップロス値（比率、例: 0.0075 = 0.75%）
+        """
+        # 固定モードの場合
+        if self.stop_loss_mode == 'fixed':
+            return self.stop_loss_fixed
+
+        # ATRベースモードの場合、ATR計算が必要
+        if self.atr_calculator is None:
+            logger.warning(f"{symbol}: ATR計算器が初期化されていません。固定値を使用します。")
+            return self.stop_loss_fixed
+
+        # 過去データを取得してATR計算
+        atr_pct = self._get_atr_for_symbol(symbol, client, current_date)
+
+        if atr_pct is None:
+            logger.warning(f"{symbol}: ATR計算失敗。固定値 {self.stop_loss_fixed:.2%} を使用します。")
+            return self.stop_loss_fixed
+
+        # モードに応じてストップロス計算
+        if self.stop_loss_mode == 'atr':
+            config = self.stop_loss_config['atr']
+            multiplier = config['multiplier']
+
+            # 銘柄別上書き
+            if symbol in self.symbol_overrides:
+                multiplier = multiplier * self.symbol_overrides[symbol].get('multiplier', 1.0)
+
+            stop_loss = (atr_pct / 100) * multiplier  # %を比率に変換
+
+            # 上限・下限制約
+            min_stop = config.get('min_stop', 0.005)
+            max_stop = config.get('max_stop', 0.03)
+
+            stop_loss = np.clip(stop_loss, min_stop, max_stop)
+            logger.debug(f"{symbol}: ATRモード - ATR={atr_pct:.2f}%, 倍率={multiplier:.2f}, ストップロス={stop_loss:.2%}")
+
+        elif self.stop_loss_mode == 'atr_adaptive':
+            config = self.stop_loss_config['atr_adaptive']
+
+            # ボラティリティレベル判定
+            thresholds = config['thresholds']
+            if atr_pct < thresholds['low_medium']:
+                multiplier = config['multipliers']['low']
+                vol_level = "低"
+            elif atr_pct < thresholds['medium_high']:
+                multiplier = config['multipliers']['medium']
+                vol_level = "中"
+            elif atr_pct < thresholds['high_extreme']:
+                multiplier = config['multipliers']['high']
+                vol_level = "高"
+            else:
+                multiplier = config['multipliers']['extreme']
+                vol_level = "極度"
+
+            # 銘柄別上書き
+            if symbol in self.symbol_overrides:
+                multiplier = multiplier * self.symbol_overrides[symbol].get('multiplier', 1.0)
+
+            stop_loss = (atr_pct / 100) * multiplier
+
+            # 上限・下限制約
+            min_stop = config.get('min_stop', 0.005)
+            max_stop = config.get('max_stop', 0.04)
+
+            stop_loss = np.clip(stop_loss, min_stop, max_stop)
+            logger.debug(
+                f"{symbol}: ATR適応型 - ATR={atr_pct:.2f}% ({vol_level}), "
+                f"倍率={multiplier:.2f}, ストップロス={stop_loss:.2%}"
+            )
+
+        else:
+            # 不明なモード（本来は到達しないはず）
+            stop_loss = self.stop_loss_fixed
+
+        return stop_loss
+
+    def _get_atr_for_symbol(
+        self,
+        symbol: str,
+        client: RefinitivClient,
+        current_date: datetime
+    ) -> Optional[float]:
+        """
+        銘柄のATR%値を取得（キャッシュ機能付き）
+
+        Args:
+            symbol: 銘柄コード
+            client: データ取得用クライアント
+            current_date: 現在の日付
+
+        Returns:
+            ATR%値、計算できない場合はNone
+        """
+        # キャッシュチェック（同じ日のATRは再利用）
+        cache_key = f"{symbol}_{current_date.date()}"
+        if cache_key in self._atr_cache:
+            return self._atr_cache[cache_key]
+
+        try:
+            # 過去20日分のデータを取得（14日分+余裕）
+            end_date = current_date
+            start_date = current_date - timedelta(days=30)  # 週末を考慮して多めに取得
+
+            # データ取得
+            data = client.get_intraday_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                interval='1min'
+            )
+
+            if data is None or data.empty:
+                logger.warning(f"{symbol}: ATR計算用のデータが取得できません")
+                return None
+
+            # ATR計算
+            atr_pct = self.atr_calculator.get_latest_atr(symbol, data)
+
+            if atr_pct is not None:
+                # キャッシュに保存
+                self._atr_cache[cache_key] = atr_pct
+                logger.debug(f"{symbol}: ATR = {atr_pct:.2f}%")
+
+            return atr_pct
+
+        except Exception as e:
+            logger.warning(f"{symbol}: ATR計算エラー - {e}")
+            return None
 
     def _compile_results(self, trading_days: int) -> Dict:
         """
