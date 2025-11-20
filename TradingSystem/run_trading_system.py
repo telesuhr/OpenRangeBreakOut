@@ -4,6 +4,11 @@
 config/strategy_config.yamlの設定に基づいてバックテストを実行し、
 Output/フォルダにレポートを生成します。
 
+変更点:
+- データベースにある全銘柄でバックテストを実行
+- yamlのstocksはポートフォリオレポート作成に使用
+- 全銘柄とポートフォリオの2種類のレポートを出力
+
 使い方:
     python run_trading_system.py
 
@@ -11,9 +16,9 @@ Output/フォルダにレポートを生成します。
     config/strategy_config.yaml を編集してください
 """
 import sys
-import os
 import yaml
 import logging
+import psycopg2
 from datetime import datetime, time
 from pathlib import Path
 
@@ -40,6 +45,102 @@ def load_config(config_path: str = "config/strategy_config.yaml") -> dict:
         config = yaml.safe_load(f)
 
     return config
+
+
+def get_all_symbols_from_db(db_config: dict) -> list:
+    """
+    データベースから全銘柄を取得
+
+    Args:
+        db_config: データベース設定辞書
+
+    Returns:
+        (銘柄コード, 銘柄名)のタプルのリスト
+    """
+    conn = psycopg2.connect(
+        host=db_config['host'],
+        port=db_config['port'],
+        database=db_config['database'],
+        user=db_config['user'],
+        password=db_config['password']
+    )
+
+    cursor = conn.cursor()
+
+    # intraday_dataテーブルから重複しない銘柄コードを取得
+    query = """
+    SELECT DISTINCT symbol
+    FROM intraday_data
+    ORDER BY symbol
+    """
+
+    cursor.execute(query)
+    symbols = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    # (銘柄コード, 銘柄名)のタプルのリストに変換
+    # 銘柄名はコードから生成（.Tを除去）
+    result = []
+    for (symbol_code,) in symbols:
+        symbol_name = symbol_code.replace('.T', '')
+        result.append((symbol_code, symbol_name))
+
+    return result
+
+
+def fetch_and_save_missing_stocks(
+    client: RefinitivClient,
+    missing_stocks: list,
+    start_date: datetime,
+    end_date: datetime
+) -> list:
+    """
+    データベースに存在しない銘柄のデータを取得して保存
+
+    Args:
+        client: Refinitivクライアント
+        missing_stocks: 不足している銘柄のリスト [(code, name), ...]
+        start_date: 取得開始日
+        end_date: 取得終了日
+
+    Returns:
+        取得成功した銘柄のリスト
+    """
+    logger = logging.getLogger(__name__)
+    successfully_fetched = []
+
+    if not missing_stocks:
+        return successfully_fetched
+
+    logger.info(f"\n不足している銘柄数: {len(missing_stocks)}")
+    logger.info("Refinitivからデータを取得してデータベースに保存します...")
+
+    for idx, (symbol_code, symbol_name) in enumerate(missing_stocks, 1):
+        try:
+            logger.info(f"\n進捗: {idx}/{len(missing_stocks)} - {symbol_name} ({symbol_code})")
+
+            # Refinitivからイントラデイデータを取得
+            data = client.get_intraday_data(
+                symbol=symbol_code,
+                start_date=start_date,
+                end_date=end_date,
+                interval='1min'
+            )
+
+            if data is not None and not data.empty:
+                logger.info(f"{symbol_name}: {len(data)}行のデータを取得しました")
+                successfully_fetched.append((symbol_code, symbol_name))
+            else:
+                logger.warning(f"{symbol_name}: データが取得できませんでした")
+
+        except Exception as e:
+            logger.error(f"{symbol_name}: データ取得エラー - {e}")
+            continue
+
+    logger.info(f"\n取得成功: {len(successfully_fetched)}/{len(missing_stocks)}銘柄")
+    return successfully_fetched
 
 
 def setup_logging(config: dict):
@@ -163,10 +264,42 @@ def main():
         # タイムスタンプ生成
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # データベース設定を確認
+        if 'database' not in config:
+            raise KeyError("database設定が見つかりません")
+
+        # バックテスト対象モードを取得
+        backtest_mode = config.get('backtest_target', {}).get('mode', 'portfolio')
+
+        # ポートフォリオ銘柄（yamlで指定）
+        portfolio_stocks = [(code, name) for code, name in config.get('stocks', [])]
+
+        # モードに応じて対象銘柄を決定
+        if backtest_mode == 'all_stocks':
+            # データベースから全銘柄を取得
+            logger.info("\n【バックテストモード: 全銘柄】")
+            logger.info("データベースから全銘柄を取得中...")
+            all_stocks = get_all_symbols_from_db(config['database'])
+            logger.info(f"取得した銘柄数: {len(all_stocks)}")
+
+            # データベースに存在しないポートフォリオ銘柄を特定
+            db_symbols_set = set(all_stocks)
+            missing_stocks = [stock for stock in portfolio_stocks if stock not in db_symbols_set]
+        else:
+            # ポートフォリオ銘柄のみを対象
+            logger.info("\n【バックテストモード: ポートフォリオ銘柄のみ】")
+            all_stocks = []
+            missing_stocks = portfolio_stocks  # ポートフォリオ銘柄は全てチェック対象
+
         # 設定情報を表示
         logger.info("\n【設定情報】")
         logger.info(f"バックテスト期間: {config['backtest_period']['start_date']} ～ {config['backtest_period']['end_date']}")
-        logger.info(f"対象銘柄数: {len(config['stocks'])}")
+        logger.info(f"バックテストモード: {backtest_mode}")
+        if backtest_mode == 'all_stocks':
+            logger.info(f"全銘柄数（データベース）: {len(all_stocks)}")
+        logger.info(f"ポートフォリオ銘柄数（yaml指定）: {len(portfolio_stocks)}")
+        if missing_stocks:
+            logger.info(f"データ取得が必要な銘柄数: {len(missing_stocks)}")
         logger.info(f"各銘柄資金: {config['capital']['per_stock']:,} 円")
         logger.info(f"オープンレンジ: {config['orb_strategy']['open_range']['start_time']} - {config['orb_strategy']['open_range']['end_time']}")
         logger.info(f"エントリー時間: {config['orb_strategy']['entry_window']['start_time']} - {config['orb_strategy']['entry_window']['end_time']}")
@@ -224,12 +357,40 @@ def main():
         entry_end_utc = jst_to_utc_time(entry_end_jst)
         force_exit_utc = jst_to_utc_time(force_exit_jst)
 
+        # ========================================
+        # 不足銘柄のデータを取得
+        # ========================================
+        if missing_stocks:
+            logger.info(f"\n{'=' * 80}")
+            logger.info("ポートフォリオ銘柄の不足データを取得")
+            logger.info(f"{'=' * 80}")
+
+            fetched_stocks = fetch_and_save_missing_stocks(
+                client=client,
+                missing_stocks=missing_stocks,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            # 取得成功した銘柄を all_stocks に追加
+            if fetched_stocks:
+                all_stocks.extend(fetched_stocks)
+                logger.info(f"\n全銘柄数（追加後）: {len(all_stocks)}")
+
         # 全銘柄の結果を保存する辞書
         all_results = {}
 
-        # 各銘柄のバックテストを実行
-        for stock_info in config['stocks']:
+        # ========================================
+        # 全銘柄のバックテストを実行
+        # ========================================
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"全{len(all_stocks)}銘柄のバックテストを開始")
+        logger.info(f"{'=' * 80}")
+
+        for idx, stock_info in enumerate(all_stocks, 1):
             symbol_code, symbol_name = stock_info
+
+            logger.info(f"\n進捗: {idx}/{len(all_stocks)} - {symbol_name} ({symbol_code})")
 
             # 各銘柄ごとに新しいBacktestEngineを作成
             # （ポートフォリオ状態をリセットするため）
@@ -274,14 +435,55 @@ def main():
                         timestamp=timestamp
                     )
 
-        # サマリーレポート生成（設定で有効化されている場合）
+        # ========================================
+        # レポート生成
+        # ========================================
         if config['reports'].get('generate_summary', True) and all_results:
-            logger.info("\n全銘柄のサマリーレポートを生成中...")
-            report_generator.generate_summary_report(
-                results=all_results,
-                config=config,
-                timestamp=timestamp
-            )
+
+            if backtest_mode == 'all_stocks':
+                # 全銘柄モード：2種類のレポートを生成
+                # 1. 全銘柄のサマリーレポート
+                logger.info("\n全銘柄のサマリーレポートを生成中...")
+                report_generator.generate_summary_report(
+                    results=all_results,
+                    config=config,
+                    timestamp=timestamp,
+                    report_prefix="all_stocks"
+                )
+                logger.info(f"全銘柄レポート完了: {len(all_results)}銘柄")
+
+                # 2. ポートフォリオのサマリーレポート
+                if portfolio_stocks:
+                    logger.info("\nポートフォリオのサマリーレポートを生成中...")
+
+                    # ポートフォリオ銘柄のみの結果を抽出
+                    portfolio_results = {
+                        key: value for key, value in all_results.items()
+                        if key in portfolio_stocks
+                    }
+
+                    if portfolio_results:
+                        report_generator.generate_summary_report(
+                            results=portfolio_results,
+                            config=config,
+                            timestamp=timestamp,
+                            report_prefix="portfolio"
+                        )
+                        logger.info(f"ポートフォリオレポート完了: {len(portfolio_results)}銘柄")
+                    else:
+                        logger.warning("ポートフォリオ銘柄のバックテスト結果が見つかりません")
+                else:
+                    logger.info("ポートフォリオ銘柄が指定されていません（yamlのstocksが空）")
+            else:
+                # ポートフォリオモード：1種類のレポートのみ
+                logger.info("\nサマリーレポートを生成中...")
+                report_generator.generate_summary_report(
+                    results=all_results,
+                    config=config,
+                    timestamp=timestamp,
+                    report_prefix="portfolio"
+                )
+                logger.info(f"レポート完了: {len(all_results)}銘柄")
 
         # Refinitivクライアントを切断
         client.disconnect()
@@ -290,7 +492,14 @@ def main():
         logger.info("トレーディングシステム正常終了")
         logger.info("=" * 80)
         logger.info(f"\nレポート出力先: {config['reports']['output_dir']}/{run_timestamp}/")
-        logger.info(f"  - 全てのレポートが1つのフォルダに保存されました")
+
+        if backtest_mode == 'all_stocks':
+            logger.info(f"  - 全銘柄レポート: all_stocks_*.csv, all_stocks_*.png")
+            logger.info(f"  - ポートフォリオレポート: portfolio_*.csv, portfolio_*.png")
+        else:
+            logger.info(f"  - ポートフォリオレポート: portfolio_*.csv, portfolio_*.png")
+
+        logger.info(f"  - 個別銘柄レポート: *_trades.csv, *_equity.csv, *_chart.png")
 
     except FileNotFoundError as e:
         print(f"\nエラー: 設定ファイルが見つかりません: {e}")

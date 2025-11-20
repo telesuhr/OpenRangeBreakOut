@@ -46,7 +46,8 @@ class ReportGenerator:
         self,
         results: Dict,
         config: Dict,
-        timestamp: str = None
+        timestamp: str = None,
+        report_prefix: str = ""
     ):
         """
         サマリーレポートを生成
@@ -55,33 +56,35 @@ class ReportGenerator:
             results: バックテスト結果の辞書（銘柄ごと）
             config: 設定辞書
             timestamp: レポートタイムスタンプ（Noneの場合は現在時刻）
+            report_prefix: レポートファイル名のプレフィックス（例: "all_stocks", "portfolio"）
         """
         if timestamp is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        logger.info("サマリーレポートを生成中...")
+        logger.info(f"サマリーレポートを生成中... (prefix: {report_prefix or 'なし'})")
 
         # CSVレポートを生成
-        self._generate_summary_csv(results, timestamp)
+        self._generate_summary_csv(results, timestamp, report_prefix)
 
         # チャートを生成
-        self._generate_summary_chart(results, timestamp)
+        self._generate_summary_chart(results, timestamp, report_prefix)
 
         # 日次P&Lヒートマップを生成
-        self._generate_daily_pl_heatmap(results, timestamp)
+        self._generate_daily_pl_heatmap(results, timestamp, report_prefix)
 
         # テキストサマリーを生成
-        self._generate_summary_text(results, config, timestamp)
+        self._generate_summary_text(results, config, timestamp, report_prefix)
 
         logger.info(f"サマリーレポート生成完了: {self.output_dir}")
 
-    def _generate_summary_csv(self, results: Dict, timestamp: str):
+    def _generate_summary_csv(self, results: Dict, timestamp: str, report_prefix: str = ""):
         """
         CSVサマリーレポートを生成
 
         Args:
             results: バックテスト結果の辞書
             timestamp: タイムスタンプ
+            report_prefix: レポートファイル名のプレフィックス
         """
         summary_data = []
 
@@ -136,17 +139,19 @@ class ReportGenerator:
         summary_df = summary_df.sort_values('総損益', ascending=False)
 
         # CSV保存
-        csv_path = self.output_dir / "summary.csv"
+        filename = f"{report_prefix}_summary.csv" if report_prefix else "summary.csv"
+        csv_path = self.output_dir / filename
         summary_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
         logger.info(f"CSVサマリー保存: {csv_path}")
 
-    def _generate_summary_chart(self, results: Dict, timestamp: str):
+    def _generate_summary_chart(self, results: Dict, timestamp: str, report_prefix: str = ""):
         """
         サマリーチャートを生成
 
         Args:
             results: バックテスト結果の辞書
             timestamp: タイムスタンプ
+            report_prefix: レポートファイル名のプレフィックス
         """
         # 図のセットアップ
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -243,12 +248,13 @@ class ReportGenerator:
 
         # レイアウト調整と保存
         plt.tight_layout()
-        chart_path = self.output_dir / "summary_charts.png"
+        filename = f"{report_prefix}_summary_charts.png" if report_prefix else "summary_charts.png"
+        chart_path = self.output_dir / filename
         plt.savefig(chart_path, dpi=100, bbox_inches='tight')
         plt.close()
         logger.info(f"サマリーチャート保存: {chart_path}")
 
-    def _generate_summary_text(self, results: Dict, config: Dict, timestamp: str):
+    def _generate_summary_text(self, results: Dict, config: Dict, timestamp: str, report_prefix: str = ""):
         """
         テキストサマリーレポートを生成
 
@@ -256,6 +262,7 @@ class ReportGenerator:
             results: バックテスト結果の辞書
             config: 設定辞書
             timestamp: タイムスタンプ
+            report_prefix: レポートファイル名のプレフィックス
         """
         lines = []
         lines.append("=" * 80)
@@ -271,7 +278,21 @@ class ReportGenerator:
         lines.append(f"オープンレンジ: {config['orb_strategy']['open_range']['start_time']} - {config['orb_strategy']['open_range']['end_time']}")
         lines.append(f"エントリー時間: {config['orb_strategy']['entry_window']['start_time']} - {config['orb_strategy']['entry_window']['end_time']}")
         lines.append(f"利益目標: {config['orb_strategy']['profit_target'] * 100:.2f}%")
-        lines.append(f"損切り: {config['orb_strategy']['stop_loss'] * 100:.2f}%")
+
+        # ストップロス設定の表示（辞書型と数値型の両方に対応）
+        stop_loss_config = config['orb_strategy']['stop_loss']
+        if isinstance(stop_loss_config, dict):
+            mode = stop_loss_config.get('mode', 'fixed')
+            if mode == 'fixed':
+                lines.append(f"損切り: {stop_loss_config['fixed']['value'] * 100:.2f}% (固定)")
+            elif mode == 'atr':
+                lines.append(f"損切り: ATRベース (倍率: {stop_loss_config['atr']['multiplier']})")
+            elif mode == 'atr_adaptive':
+                lines.append(f"損切り: ATR適応型 (ボラティリティに応じて自動調整)")
+        else:
+            # 後方互換性（数値型の場合）
+            lines.append(f"損切り: {stop_loss_config * 100:.2f}%")
+
         lines.append("")
 
         # 全体統計
@@ -332,7 +353,8 @@ class ReportGenerator:
         lines.append("=" * 80)
 
         # ファイル保存
-        text_path = self.output_dir / "summary.txt"
+        filename = f"{report_prefix}_summary.txt" if report_prefix else "summary.txt"
+        text_path = self.output_dir / filename
         with open(text_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
 
@@ -341,13 +363,14 @@ class ReportGenerator:
         # コンソール出力
         print('\n'.join(lines))
 
-    def _generate_daily_pl_heatmap(self, results: Dict, timestamp: str):
+    def _generate_daily_pl_heatmap(self, results: Dict, timestamp: str, report_prefix: str = ""):
         """
         日次P&Lヒートマップを生成
 
         Args:
             results: バックテスト結果の辞書
             timestamp: タイムスタンプ
+            report_prefix: レポートファイル名のプレフィックス
         """
         logger.info("日次P&Lヒートマップを生成中...")
 
@@ -441,7 +464,8 @@ class ReportGenerator:
 
         # レイアウト調整と保存
         plt.tight_layout()
-        heatmap_path = self.output_dir / "daily_pl_heatmap.png"
+        filename = f"{report_prefix}_daily_pl_heatmap.png" if report_prefix else "daily_pl_heatmap.png"
+        heatmap_path = self.output_dir / filename
         plt.savefig(heatmap_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"日次P&Lヒートマップ保存: {heatmap_path}")
