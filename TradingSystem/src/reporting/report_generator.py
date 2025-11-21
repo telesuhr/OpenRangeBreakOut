@@ -374,8 +374,9 @@ class ReportGenerator:
         """
         logger.info("日次P&Lヒートマップを生成中...")
 
-        # 各銘柄の日次P&Lデータを収集
+        # 各銘柄の日次P&Lデータと終了理由を収集
         daily_pnl_data = {}
+        daily_exit_reasons = {}  # 各銘柄の各日の終了理由を記録
         all_dates = set()
 
         for symbol, result in results.items():
@@ -395,6 +396,26 @@ class ReportGenerator:
                 daily_pnl_data[symbol_name] = daily_pnl
                 all_dates.update(daily_pnl.index)
 
+                # 日付ごとの終了理由を記録（その日に損切りまたは利食いがあったか）
+                if 'reason' in trades_df.columns:
+                    exit_reasons_dict = {}
+
+                    for date in daily_pnl.index:
+                        day_trades = trades_df[trades_df['date'] == date]
+                        # その日のトレードに損切り(loss)または利食い(profit)があるか確認
+                        has_loss = (day_trades['reason'] == 'loss').any()
+                        has_profit = (day_trades['reason'] == 'profit').any()
+
+                        # 両方ある場合は、より重要な方を優先（利食い優先）
+                        if has_profit:
+                            exit_reasons_dict[date] = 'profit'
+                        elif has_loss:
+                            exit_reasons_dict[date] = 'loss'
+                        else:
+                            exit_reasons_dict[date] = None
+
+                    daily_exit_reasons[symbol_name] = exit_reasons_dict
+
         if not daily_pnl_data:
             logger.warning("ヒートマップ用のデータがありません")
             return
@@ -411,6 +432,17 @@ class ReportGenerator:
             row = [daily_pnl.get(date, 0) for date in all_dates]
             matrix_data.append(row)
 
+        # トータル行を追加
+        total_row = []
+        for date_idx, date in enumerate(all_dates):
+            # 各銘柄のその日の損益を合計
+            daily_total = sum(matrix_data[symbol_idx][date_idx] for symbol_idx in range(len(matrix_data)))
+            total_row.append(daily_total)
+
+        # トータル行をマトリクスと銘柄リストに追加
+        matrix_data.append(total_row)
+        symbol_names.append('【Total】')
+
         # NumPy配列に変換
         heatmap_matrix = np.array(matrix_data)
 
@@ -419,47 +451,109 @@ class ReportGenerator:
         n_bins = 100
         cmap = LinearSegmentedColormap.from_list('custom_diverging', colors_list, N=n_bins)
 
-        # ヒートマップのプロット
-        fig, ax = plt.subplots(figsize=(max(16, len(all_dates) * 0.3), max(8, len(symbol_names) * 0.4)))
+        # マトリクスを転置（縦軸=日付、横軸=銘柄）
+        heatmap_matrix_T = heatmap_matrix.T
+
+        # ヒートマップのプロット（縦横を入れ替え）
+        fig, ax = plt.subplots(figsize=(max(16, len(symbol_names) * 0.5), max(8, len(all_dates) * 0.3)))
 
         # データの範囲を取得（カラースケールを対称にする）
-        vmax = np.abs(heatmap_matrix).max()
+        vmax = np.abs(heatmap_matrix_T).max()
         vmin = -vmax
 
-        # ヒートマップを描画
-        im = ax.imshow(heatmap_matrix, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
+        # ヒートマップを描画（転置したマトリクス）
+        im = ax.imshow(heatmap_matrix_T, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
 
-        # 軸ラベルの設定
-        ax.set_xticks(np.arange(len(all_dates)))
-        ax.set_yticks(np.arange(len(symbol_names)))
+        # 軸ラベルの設定（縦横を入れ替え）
+        ax.set_xticks(np.arange(len(symbol_names)))
+        ax.set_yticks(np.arange(len(all_dates)))
 
         # 日付フォーマット
         date_labels = [pd.to_datetime(date).strftime('%m/%d') for date in all_dates]
-        ax.set_xticklabels(date_labels, rotation=90, ha='right', fontsize=8)
-        ax.set_yticklabels(symbol_names, fontsize=10)
+        ax.set_xticklabels(symbol_names, rotation=90, ha='right', fontsize=9)
+        ax.set_yticklabels(date_labels, fontsize=8)
+
+        # Total列のラベルを太字にする
+        xtick_labels = ax.get_xticklabels()
+        if len(xtick_labels) > 0:
+            xtick_labels[-1].set_fontweight('bold')
+            xtick_labels[-1].set_fontsize(11)
+
+        # Total列の左に区切り線を追加
+        ax.axvline(x=len(symbol_names) - 1.5, color='black', linewidth=2, linestyle='-', alpha=0.8)
 
         # 軸ラベル
-        ax.set_xlabel('日付', fontsize=12, fontweight='bold')
-        ax.set_ylabel('銘柄', fontsize=12, fontweight='bold')
-        ax.set_title('日次損益ヒートマップ（銘柄 × 日付）', fontsize=14, fontweight='bold', pad=20)
+        ax.set_xlabel('銘柄', fontsize=12, fontweight='bold')
+        ax.set_ylabel('日付', fontsize=12, fontweight='bold')
+        ax.set_title('日次損益ヒートマップ（日付 × 銘柄）', fontsize=14, fontweight='bold', pad=20)
 
         # カラーバーの追加
         cbar = plt.colorbar(im, ax=ax, pad=0.02)
         cbar.set_label('損益 (円)', rotation=270, labelpad=20, fontsize=11)
 
-        # セル内に値を表示（オプション: データが少ない場合のみ）
-        if len(symbol_names) <= 20 and len(all_dates) <= 30:
-            for i in range(len(symbol_names)):
-                for j in range(len(all_dates)):
-                    value = heatmap_matrix[i, j]
-                    if value != 0:  # ゼロの場合は表示しない
-                        text_color = 'white' if abs(value) > vmax * 0.5 else 'black'
-                        ax.text(j, i, f'{value:.0f}',
-                               ha='center', va='center', color=text_color, fontsize=6)
+        # セル内に値を表示（データ量に応じてフォントサイズと表示形式を調整）
+        total_cells = len(symbol_names) * len(all_dates)
 
-        # グリッド線の追加
-        ax.set_xticks(np.arange(len(all_dates)) - 0.5, minor=True)
-        ax.set_yticks(np.arange(len(symbol_names)) - 0.5, minor=True)
+        # フォントサイズを動的に調整（最小6ポイント）
+        if total_cells < 400:
+            fontsize = 8
+            value_format = '{:.0f}'
+        elif total_cells < 800:
+            fontsize = 7
+            value_format = '{:.0f}'
+        else:
+            fontsize = 6
+            # 値が大きい場合は千円単位で表示
+            value_format = '{:.0f}k' if total_cells > 1500 else '{:.0f}'
+
+        for i in range(len(symbol_names)):
+            for j in range(len(all_dates)):
+                value = heatmap_matrix[i, j]
+                if value != 0:  # ゼロの場合は表示しない
+                    text_color = 'white' if abs(value) > vmax * 0.5 else 'black'
+                    # 値の表示（千円単位の場合は変換）
+                    if 'k' in value_format:
+                        display_value = value_format.format(value / 1000)
+                    else:
+                        display_value = value_format.format(value)
+                    # 転置後の座標: (銘柄index, 日付index) → (日付index, 銘柄index)
+                    ax.text(i, j, display_value,
+                           ha='center', va='center', color=text_color, fontsize=fontsize)
+
+        # 損切り（×）と利食い（○）のマーカーを表示
+        for i, symbol_name in enumerate(symbol_names):
+            # Total列はスキップ
+            if symbol_name == '【Total】':
+                continue
+
+            # この銘柄の終了理由データを取得
+            if symbol_name not in daily_exit_reasons:
+                continue
+
+            exit_reasons = daily_exit_reasons[symbol_name]
+
+            for j, date in enumerate(all_dates):
+                if date in exit_reasons:
+                    reason = exit_reasons[date]
+
+                    # マーカーの色を決定（背景の明るさに応じて）
+                    value = heatmap_matrix[i, j]
+                    # 背景が暗い（損失が大きい）場合は白、明るい（利益が大きい）場合は黒
+                    marker_color = 'white' if abs(value) > vmax * 0.5 else 'black'
+
+                    if reason == 'loss':
+                        # 損切り: × マーク（右上に配置）
+                        # 転置後の座標: x=銘柄index, y=日付index
+                        ax.text(i + 0.4, j - 0.35, '×', ha='center', va='center',
+                               color=marker_color, fontsize=12, fontweight='normal', alpha=0.6)
+                    elif reason == 'profit':
+                        # 利食い: ○ マーク（右上に配置）
+                        ax.text(i + 0.4, j - 0.35, '○', ha='center', va='center',
+                               color=marker_color, fontsize=12, fontweight='normal', alpha=0.6)
+
+        # グリッド線の追加（転置後の軸に合わせる）
+        ax.set_xticks(np.arange(len(symbol_names)) - 0.5, minor=True)
+        ax.set_yticks(np.arange(len(all_dates)) - 0.5, minor=True)
         ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
 
         # レイアウト調整と保存

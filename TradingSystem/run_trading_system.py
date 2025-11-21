@@ -305,6 +305,19 @@ def main():
         logger.info(f"エントリー時間: {config['orb_strategy']['entry_window']['start_time']} - {config['orb_strategy']['entry_window']['end_time']}")
         logger.info(f"利益目標: {config['orb_strategy']['profit_target'] * 100:.2f}%")
 
+        # エントリーフィルター設定の表示
+        entry_filters = config.get('orb_strategy', {}).get('entry_filters', {})
+        nikkei_filter = entry_filters.get('nikkei_futures_filter', {})
+        if nikkei_filter.get('enabled', False):
+            logger.info(
+                f"日経先物フィルター: 有効 "
+                f"(閾値: {nikkei_filter.get('threshold', -2.0)*100:.1f}%, "
+                f"シンボル: {nikkei_filter.get('symbol', 'NKDc1')}, "
+                f"代替: {nikkei_filter.get('fallback_symbol', '.SPX')})"
+            )
+        else:
+            logger.info("日経先物フィルター: 無効")
+
         # ストップロス設定の表示
         stop_loss_config = config['orb_strategy']['stop_loss']
         if isinstance(stop_loss_config, dict):
@@ -403,7 +416,8 @@ def main():
                 profit_target=orb_params['profit_target'],
                 stop_loss=orb_params['stop_loss'],  # 辞書またはfloat値を渡す
                 force_exit_time=force_exit_utc,
-                commission_rate=config['capital']['commission_rate']
+                commission_rate=config['capital']['commission_rate'],
+                nikkei_futures_filter=orb_params.get('entry_filters', {}).get('nikkei_futures_filter')
             )
 
             # バックテスト実行

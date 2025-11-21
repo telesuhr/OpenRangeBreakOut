@@ -14,6 +14,7 @@ from .portfolio import Portfolio
 from .position import Position
 from ..analysis.performance import PerformanceAnalyzer
 from ..indicators.atr import ATRCalculator
+from ..filters.market_filter import NikkeiFuturesFilter
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ class BacktestEngine:
         profit_target: float,
         stop_loss: Union[float, Dict],
         force_exit_time: time,
-        commission_rate: float
+        commission_rate: float,
+        nikkei_futures_filter: Optional[Dict] = None
     ):
         """
         Args:
@@ -44,6 +46,7 @@ class BacktestEngine:
             stop_loss: 損切り設定（float値または設定辞書）
             force_exit_time: 強制決済時刻
             commission_rate: 手数料率（片道）
+            nikkei_futures_filter: 日経先物フィルター設定（Noneの場合は無効）
         """
         self.initial_capital = initial_capital
         self.range_start = range_start
@@ -82,6 +85,18 @@ class BacktestEngine:
         # 銘柄別の上書き設定
         self.symbol_overrides = self.stop_loss_config.get('symbol_overrides', {})
 
+        # 日経先物フィルターの初期化
+        if nikkei_futures_filter and nikkei_futures_filter.get('enabled', False):
+            self.nikkei_futures_filter = NikkeiFuturesFilter(
+                enabled=True,
+                futures_symbol=nikkei_futures_filter.get('symbol', 'NKDc1'),
+                fallback_symbol=nikkei_futures_filter.get('fallback_symbol', '.SPX'),
+                threshold=nikkei_futures_filter.get('threshold', -0.02),
+                reference_time_utc=nikkei_futures_filter.get('reference_time_utc', '21:00')
+            )
+        else:
+            self.nikkei_futures_filter = None
+
         # コンポーネント初期化
         self.detector = RangeBreakoutDetector(range_start, range_end)
         self.portfolio = Portfolio(initial_capital)
@@ -95,6 +110,9 @@ class BacktestEngine:
 
         # ATR値のキャッシュ（銘柄ごと）
         self._atr_cache = {}
+
+        # 日経先物フィルターで見送った日数（統計）
+        self.filter_skipped_days = 0
 
     def run_backtest(
         self,
@@ -132,13 +150,23 @@ class BacktestEngine:
 
             logger.info(f"\n--- {current_date.date()} ---")
 
+            # 日経先物フィルターチェック
+            allow_entry_today = True
+            if self.nikkei_futures_filter is not None:
+                filter_result = self.nikkei_futures_filter.check_entry_allowed(current_date, client)
+                allow_entry_today = filter_result['allow_entry']
+
+                if not allow_entry_today:
+                    logger.info(f"エントリー見送り: {filter_result['reason']}")
+                    self.filter_skipped_days += 1
+
             # 日次開始時に最終価格をクリア
             self.last_prices = {}
 
             # 各銘柄の処理
             for symbol in symbols:
                 try:
-                    self._process_symbol_for_day(client, symbol, current_date)
+                    self._process_symbol_for_day(client, symbol, current_date, allow_entry_today)
                 except Exception as e:
                     logger.warning(f"{symbol} 処理エラー: {e}")
                     continue
@@ -178,7 +206,8 @@ class BacktestEngine:
         self,
         client: RefinitivClient,
         symbol: str,
-        date: datetime
+        date: datetime,
+        allow_entry: bool = True
     ):
         """
         特定の日の特定銘柄を処理
@@ -187,6 +216,7 @@ class BacktestEngine:
             client: APIクライアント
             symbol: 銘柄コード
             date: 対象日
+            allow_entry: エントリーを許可するか（フィルターによる制限）
         """
         # 分足データ取得（UTC時刻で指定）
         # JST 09:00 = UTC 00:00 から force_exit_time（既にUTC）まで
@@ -231,6 +261,10 @@ class BacktestEngine:
 
         for idx, row in data.iterrows():
             bar_time = idx.time()
+
+            # エントリー許可チェック（日経先物フィルター）
+            if not allow_entry:
+                break  # この日のエントリーは見送り
 
             # エントリー時間帯のチェック
             if not (self.entry_start <= bar_time < self.entry_end):
