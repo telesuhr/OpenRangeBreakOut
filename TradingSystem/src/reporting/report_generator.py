@@ -226,6 +226,10 @@ class ReportGenerator:
 
         # 4. 累積エクイティカーブ（複合）
         ax4 = axes[1, 1]
+
+        # まず全ての線をプロットして、ラベル情報を収集
+        label_info = []  # (last_date, last_value, symbol_name, line_color)
+
         for symbol, result in results.items():
             symbol_code, symbol_name = symbol if isinstance(symbol, tuple) else (symbol, symbol)
             equity_curve = result.get('equity_curve', pd.Series())
@@ -236,12 +240,45 @@ class ReportGenerator:
                 else:
                     equity_values = equity_curve.values
 
-                ax4.plot(equity_curve.index, equity_values, label=symbol_name, alpha=0.7)
+                # 線をプロット
+                line = ax4.plot(equity_curve.index, equity_values, alpha=0.7)[0]
+
+                # ラベル情報を収集
+                last_date = equity_curve.index[-1]
+                last_value = equity_values[-1]
+                label_info.append((last_date, last_value, symbol_name, line.get_color()))
+
+        # Y軸の範囲を取得（プロット後）
+        ymin, ymax = ax4.get_ylim()
+        y_range = ymax - ymin
+        min_spacing = y_range * 0.03  # 最小間隔を3%に設定
+
+        # 最終値でソート（Y座標順）
+        label_info.sort(key=lambda x: x[1])
+
+        # 重複を避けてラベルを配置
+        label_positions = []
+        for last_date, last_value, symbol_name, line_color in label_info:
+            adjusted_value = last_value
+
+            # 既存のラベルと重複しないように調整
+            for existing_pos in label_positions:
+                if abs(adjusted_value - existing_pos) < min_spacing:
+                    # 重複する場合は上にずらす
+                    adjusted_value = existing_pos + min_spacing
+
+            label_positions.append(adjusted_value)
+
+            # 銘柄名を表示（線の色と同じ色で）
+            ax4.text(last_date, adjusted_value, f' {symbol_name}',
+                    fontsize=8, va='center', ha='left',
+                    color=line_color, alpha=0.8,
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                            edgecolor=line_color, alpha=0.7))
 
         ax4.set_xlabel('日付', fontsize=12)
         ax4.set_ylabel('エクイティ (円)', fontsize=12)
         ax4.set_title('累積エクイティカーブ', fontsize=14, fontweight='bold')
-        ax4.legend(loc='best', fontsize=8)
         ax4.grid(True, alpha=0.3)
         ax4.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45, ha='right')
