@@ -460,13 +460,10 @@ class ReportGenerator:
         heatmap_matrix = np.array(matrix_data)
 
         # カラーマップの作成
-        # 日次PL用: 赤=損失、白=ゼロ、緑=利益
-        colors_list_daily = ['#d62728', '#ff7f0e', '#ffffff', '#90ee90', '#2ca02c']
-        # 合計用: 青系のカラーマップ
-        colors_list_total = ['#08519c', '#3182bd', '#f0f0f0', '#fdae6b', '#e6550d']
+        # 日次PLと合計の両方で同じカラーマップを使用: 赤=損失、白=ゼロ、緑=利益
+        colors_list = ['#d62728', '#ff7f0e', '#ffffff', '#90ee90', '#2ca02c']
         n_bins = 100
-        cmap_daily = LinearSegmentedColormap.from_list('daily_diverging', colors_list_daily, N=n_bins)
-        cmap_total = LinearSegmentedColormap.from_list('total_diverging', colors_list_total, N=n_bins)
+        cmap = LinearSegmentedColormap.from_list('diverging', colors_list, N=n_bins)
 
         # マトリクスを転置（縦軸=日付、横軸=銘柄）
         heatmap_matrix_T = heatmap_matrix.T
@@ -498,15 +495,15 @@ class ReportGenerator:
         normalized_matrix[-1, -1] = np.clip(heatmap_matrix_T[-1, -1] / vmax_total, -1, 1)
 
         # ヒートマップを描画（正規化されたマトリクス）
-        im = ax.imshow(normalized_matrix, cmap=cmap_daily, aspect='auto', vmin=-1, vmax=1)
+        im = ax.imshow(normalized_matrix, cmap=cmap, aspect='auto', vmin=-1, vmax=1)
 
-        # 合計行/列に青系のカラーマップを適用（セルを上書き）
+        # 合計行/列を同じカラーマップで上書き（別の正規化範囲を適用）
         from matplotlib.patches import Rectangle
 
         # 合計行（最終行）のセルを上書き
         for i in range(len(symbol_names)):
             normalized_value = normalized_matrix[-1, i]
-            color = cmap_total((normalized_value + 1) / 2)  # -1～1を0～1に変換
+            color = cmap((normalized_value + 1) / 2)  # -1～1を0～1に変換
             rect = Rectangle((i - 0.5, len(all_dates) - 1.5), 1, 1,
                            facecolor=color, edgecolor='none')
             ax.add_patch(rect)
@@ -514,7 +511,7 @@ class ReportGenerator:
         # 合計列（最終列）のセルを上書き（最終行を除く）
         for j in range(len(all_dates) - 1):  # 最終行は既に上書き済み
             normalized_value = normalized_matrix[j, -1]
-            color = cmap_total((normalized_value + 1) / 2)
+            color = cmap((normalized_value + 1) / 2)
             rect = Rectangle((len(symbol_names) - 1.5, j - 0.5), 1, 1,
                            facecolor=color, edgecolor='none')
             ax.add_patch(rect)
