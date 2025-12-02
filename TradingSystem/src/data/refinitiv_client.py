@@ -177,23 +177,33 @@ class RefinitivClient:
             )
 
             # 3. 取得したデータをDBに保存
+            # ただし、行数が少なすぎる場合はプレースホルダーデータと判断して保存しない
             if self.use_cache and self.db_manager and not data.empty:
-                saved_count = self.db_manager.save_intraday_data(
-                    symbol=symbol,
-                    data=data,
-                    interval=interval
-                )
-                logger.info(f"{symbol}: {saved_count}行をDBに保存 ✓")
+                MIN_VALID_ROWS = 10  # 最低限必要な行数（1分足なら1日約350行が正常）
 
-                # ログに記録
-                self.db_manager.log_fetch(
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date,
-                    interval=interval,
-                    source='api',
-                    records_count=len(data)
-                )
+                if len(data) < MIN_VALID_ROWS:
+                    logger.warning(
+                        f"{symbol}: 取得データが{len(data)}行のみ（期待値: ~350行/日）。"
+                        f"プレースホルダーデータの可能性があるため保存をスキップ。"
+                        f"より古い日付で再試行してください。"
+                    )
+                else:
+                    saved_count = self.db_manager.save_intraday_data(
+                        symbol=symbol,
+                        data=data,
+                        interval=interval
+                    )
+                    logger.info(f"{symbol}: {saved_count}行をDBに保存 ✓")
+
+                    # ログに記録（保存した場合のみ）
+                    self.db_manager.log_fetch(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        interval=interval,
+                        source='api',
+                        records_count=len(data)
+                    )
 
             return data
 

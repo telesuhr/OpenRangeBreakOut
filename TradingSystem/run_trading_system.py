@@ -47,12 +47,14 @@ def load_config(config_path: str = "config/strategy_config.yaml") -> dict:
     return config
 
 
-def get_all_symbols_from_db(db_config: dict) -> list:
+def get_all_symbols_from_db(db_config: dict, start_date: datetime = None, end_date: datetime = None) -> list:
     """
-    データベースから全銘柄を取得
+    データベースから全銘柄を取得（オプション：指定期間のデータを持つ銘柄のみ）
 
     Args:
         db_config: データベース設定辞書
+        start_date: 開始日（オプション）
+        end_date: 終了日（オプション）
 
     Returns:
         (銘柄コード, 銘柄名)のタプルのリスト
@@ -67,14 +69,27 @@ def get_all_symbols_from_db(db_config: dict) -> list:
 
     cursor = conn.cursor()
 
-    # intraday_dataテーブルから重複しない銘柄コードを取得
-    query = """
-    SELECT DISTINCT symbol
-    FROM intraday_data
-    ORDER BY symbol
-    """
+    # 期間指定がある場合は、その期間のデータを持つ銘柄のみを取得
+    if start_date and end_date:
+        from datetime import timedelta
+        # end_dateは日付のみ指定された場合00:00:00になるため、翌日00:00:00未満で検索
+        end_date_inclusive = end_date + timedelta(days=1)
+        query = """
+        SELECT DISTINCT symbol
+        FROM intraday_data
+        WHERE timestamp >= %s AND timestamp < %s
+        ORDER BY symbol
+        """
+        cursor.execute(query, (start_date, end_date_inclusive))
+    else:
+        # 期間指定がない場合は全銘柄を取得
+        query = """
+        SELECT DISTINCT symbol
+        FROM intraday_data
+        ORDER BY symbol
+        """
+        cursor.execute(query)
 
-    cursor.execute(query)
     symbols = cursor.fetchall()
 
     cursor.close()
@@ -274,17 +289,27 @@ def main():
         # ポートフォリオ銘柄（yamlで指定）
         portfolio_stocks = [(code, name) for code, name in config.get('stocks', [])]
 
+        # バックテスト期間をパース（銘柄取得で使用）
+        start_date = datetime.strptime(config['backtest_period']['start_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(config['backtest_period']['end_date'], '%Y-%m-%d')
+
         # モードに応じて対象銘柄を決定
         if backtest_mode == 'all_stocks':
             # データベースから全銘柄を取得
             logger.info("\n【バックテストモード: 全銘柄】")
-            logger.info("データベースから全銘柄を取得中...")
-            all_stocks = get_all_symbols_from_db(config['database'])
-            logger.info(f"取得した銘柄数: {len(all_stocks)}")
+            logger.info(f"データベースから全銘柄を取得中（期間: {config['backtest_period']['start_date']} ～ {config['backtest_period']['end_date']}）...")
 
-            # データベースに存在しないポートフォリオ銘柄を特定
-            db_symbols_set = set(all_stocks)
-            missing_stocks = [stock for stock in portfolio_stocks if stock not in db_symbols_set]
+            # まず全銘柄を取得
+            all_stocks_in_db = get_all_symbols_from_db(config['database'])
+            logger.info(f"データベース登録銘柄数: {len(all_stocks_in_db)}")
+
+            # 指定期間のデータを持つ銘柄を取得
+            all_stocks = get_all_symbols_from_db(config['database'], start_date, end_date)
+            logger.info(f"指定期間のデータを持つ銘柄数: {len(all_stocks)}")
+
+            # 指定期間のデータがない銘柄を特定（自動取得対象）
+            db_symbol_codes_with_data = set(symbol_code for symbol_code, _ in all_stocks)
+            missing_stocks = [stock for stock in all_stocks_in_db if stock[0] not in db_symbol_codes_with_data]
         else:
             # ポートフォリオ銘柄のみを対象
             logger.info("\n【バックテストモード: ポートフォリオ銘柄のみ】")
@@ -350,10 +375,6 @@ def main():
             run_timestamp=run_timestamp
         )
 
-        # バックテスト期間をパース
-        start_date = datetime.strptime(config['backtest_period']['start_date'], '%Y-%m-%d')
-        end_date = datetime.strptime(config['backtest_period']['end_date'], '%Y-%m-%d')
-
         # ORB戦略パラメータをパース
         orb_params = config['orb_strategy']
 
@@ -375,7 +396,10 @@ def main():
         # ========================================
         if missing_stocks:
             logger.info(f"\n{'=' * 80}")
-            logger.info("ポートフォリオ銘柄の不足データを取得")
+            if backtest_mode == 'all_stocks':
+                logger.info("指定期間のデータが不足している銘柄のデータを取得")
+            else:
+                logger.info("ポートフォリオ銘柄の不足データを取得")
             logger.info(f"{'=' * 80}")
 
             fetched_stocks = fetch_and_save_missing_stocks(

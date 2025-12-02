@@ -23,17 +23,17 @@ pip-log.txt
 *.swp
 *.swo
 
-# Output Files
-Output/*.log
-Output/daily_reports/*.csv
-Output/charts/*.png
-Output/summary/*
-
-# Keep directory structure
+# Output Files - Ignore all backtest results
+Output/*/
 !Output/.gitkeep
-!Output/daily_reports/.gitkeep
-!Output/charts/.gitkeep
-!Output/summary/.gitkeep
+
+# Logs
+*.log
+*.pid
+
+# Backup files
+*.backup
+*.backup_*
 
 # Database
 *.db
