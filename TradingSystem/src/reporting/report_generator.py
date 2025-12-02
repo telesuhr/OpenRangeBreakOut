@@ -423,33 +423,50 @@ class ReportGenerator:
         # 日付をソート
         all_dates = sorted(list(all_dates))
 
-        # マトリクス作成（銘柄×日付）
+        # マトリクス作成（銘柄×日付）+ 銘柄別合計列
         matrix_data = []
         symbol_names = []
+        symbol_totals = []  # 銘柄ごとの合計
 
         for symbol_name, daily_pnl in daily_pnl_data.items():
             symbol_names.append(symbol_name)
             row = [daily_pnl.get(date, 0) for date in all_dates]
             matrix_data.append(row)
+            # 銘柄ごとの合計を計算
+            symbol_totals.append(sum(row))
 
-        # トータル行を追加
+        # 日次合計行を追加
         total_row = []
         for date_idx, date in enumerate(all_dates):
             # 各銘柄のその日の損益を合計
             daily_total = sum(matrix_data[symbol_idx][date_idx] for symbol_idx in range(len(matrix_data)))
             total_row.append(daily_total)
 
-        # トータル行をマトリクスと銘柄リストに追加
+        # 各行に銘柄別合計を追加（合計列の作成）
+        for i in range(len(matrix_data)):
+            matrix_data[i].append(symbol_totals[i])
+
+        # 合計列の日付を追加
+        all_dates.append("合計")
+
+        # 日次合計行を作成（各日の合計 + 全体合計）
+        total_row.append(sum(symbol_totals))  # 全体合計
+
+        # 日次合計行をマトリクスと銘柄リストに追加
         matrix_data.append(total_row)
-        symbol_names.append('【Total】')
+        symbol_names.append('【日次合計】')
 
         # NumPy配列に変換
         heatmap_matrix = np.array(matrix_data)
 
-        # カラーマップの作成（赤=損失、白=ゼロ、緑=利益）
-        colors_list = ['#d62728', '#ff7f0e', '#ffffff', '#90ee90', '#2ca02c']  # 赤→オレンジ→白→薄緑→緑
+        # カラーマップの作成
+        # 日次PL用: 赤=損失、白=ゼロ、緑=利益
+        colors_list_daily = ['#d62728', '#ff7f0e', '#ffffff', '#90ee90', '#2ca02c']
+        # 合計用: 青系のカラーマップ
+        colors_list_total = ['#08519c', '#3182bd', '#f0f0f0', '#fdae6b', '#e6550d']
         n_bins = 100
-        cmap = LinearSegmentedColormap.from_list('custom_diverging', colors_list, N=n_bins)
+        cmap_daily = LinearSegmentedColormap.from_list('daily_diverging', colors_list_daily, N=n_bins)
+        cmap_total = LinearSegmentedColormap.from_list('total_diverging', colors_list_total, N=n_bins)
 
         # マトリクスを転置（縦軸=日付、横軸=銘柄）
         heatmap_matrix_T = heatmap_matrix.T
@@ -457,30 +474,80 @@ class ReportGenerator:
         # ヒートマップのプロット（縦横を入れ替え）
         fig, ax = plt.subplots(figsize=(max(16, len(symbol_names) * 0.5), max(8, len(all_dates) * 0.3)))
 
-        # データの範囲を取得（カラースケールを対称にする）
-        vmax = np.abs(heatmap_matrix_T).max()
-        vmin = -vmax
+        # 日次PL部分（合計行/列を除く）のデータ範囲を取得
+        daily_data = heatmap_matrix_T[:-1, :-1]  # 最終行（日次合計行）と最終列（合計列）を除く
+        vmax_daily = np.abs(daily_data).max() if daily_data.size > 0 else 1
+        vmin_daily = -vmax_daily
 
-        # ヒートマップを描画（転置したマトリクス）
-        im = ax.imshow(heatmap_matrix_T, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
+        # 合計行/列のデータ範囲を取得
+        total_row_data = heatmap_matrix_T[-1, :-1]  # 最終行（最終列を除く）
+        total_col_data = heatmap_matrix_T[:-1, -1]  # 最終列（最終行を除く）
+        total_all_data = np.concatenate([total_row_data, total_col_data])
+        vmax_total = np.abs(total_all_data).max() if total_all_data.size > 0 else 1
+        vmin_total = -vmax_total
+
+        # 正規化されたマトリクスを作成（日次PLと合計で異なるスケールを使用）
+        normalized_matrix = np.zeros_like(heatmap_matrix_T, dtype=float)
+        # 日次PL部分を正規化
+        normalized_matrix[:-1, :-1] = np.clip(heatmap_matrix_T[:-1, :-1] / vmax_daily, -1, 1)
+        # 合計行を正規化
+        normalized_matrix[-1, :-1] = np.clip(heatmap_matrix_T[-1, :-1] / vmax_total, -1, 1)
+        # 合計列を正規化
+        normalized_matrix[:-1, -1] = np.clip(heatmap_matrix_T[:-1, -1] / vmax_total, -1, 1)
+        # 全体合計セル
+        normalized_matrix[-1, -1] = np.clip(heatmap_matrix_T[-1, -1] / vmax_total, -1, 1)
+
+        # ヒートマップを描画（正規化されたマトリクス）
+        im = ax.imshow(normalized_matrix, cmap=cmap_daily, aspect='auto', vmin=-1, vmax=1)
+
+        # 合計行/列に青系のカラーマップを適用（セルを上書き）
+        from matplotlib.patches import Rectangle
+
+        # 合計行（最終行）のセルを上書き
+        for i in range(len(symbol_names)):
+            normalized_value = normalized_matrix[-1, i]
+            color = cmap_total((normalized_value + 1) / 2)  # -1～1を0～1に変換
+            rect = Rectangle((i - 0.5, len(all_dates) - 1.5), 1, 1,
+                           facecolor=color, edgecolor='none')
+            ax.add_patch(rect)
+
+        # 合計列（最終列）のセルを上書き（最終行を除く）
+        for j in range(len(all_dates) - 1):  # 最終行は既に上書き済み
+            normalized_value = normalized_matrix[j, -1]
+            color = cmap_total((normalized_value + 1) / 2)
+            rect = Rectangle((len(symbol_names) - 1.5, j - 0.5), 1, 1,
+                           facecolor=color, edgecolor='none')
+            ax.add_patch(rect)
 
         # 軸ラベルの設定（縦横を入れ替え）
         ax.set_xticks(np.arange(len(symbol_names)))
         ax.set_yticks(np.arange(len(all_dates)))
 
-        # 日付フォーマット
-        date_labels = [pd.to_datetime(date).strftime('%m/%d') for date in all_dates]
+        # 日付フォーマット（"合計"以外をdatetimeに変換）
+        date_labels = []
+        for date in all_dates:
+            if date == "合計":
+                date_labels.append("合計")
+            else:
+                date_labels.append(pd.to_datetime(date).strftime('%m/%d'))
+
         ax.set_xticklabels(symbol_names, rotation=90, ha='right', fontsize=9)
         ax.set_yticklabels(date_labels, fontsize=8)
 
-        # Total列のラベルを太字にする
+        # 合計行・合計列のラベルを太字にする
         xtick_labels = ax.get_xticklabels()
+        ytick_labels = ax.get_yticklabels()
         if len(xtick_labels) > 0:
             xtick_labels[-1].set_fontweight('bold')
             xtick_labels[-1].set_fontsize(11)
+        if len(ytick_labels) > 0:
+            ytick_labels[-1].set_fontweight('bold')
+            ytick_labels[-1].set_fontsize(11)
 
-        # Total列の左に区切り線を追加
+        # 合計列の左に区切り線を追加
         ax.axvline(x=len(symbol_names) - 1.5, color='black', linewidth=2, linestyle='-', alpha=0.8)
+        # 合計行の上に区切り線を追加
+        ax.axhline(y=len(all_dates) - 1.5, color='black', linewidth=2, linestyle='-', alpha=0.8)
 
         # 軸ラベル
         ax.set_xlabel('銘柄', fontsize=12, fontweight='bold')
@@ -489,41 +556,39 @@ class ReportGenerator:
 
         # カラーバーの追加
         cbar = plt.colorbar(im, ax=ax, pad=0.02)
-        cbar.set_label('損益 (円)', rotation=270, labelpad=20, fontsize=11)
+        cbar.set_label('損益 (千円)', rotation=270, labelpad=20, fontsize=11)
 
         # セル内に値を表示（データ量に応じてフォントサイズと表示形式を調整）
         total_cells = len(symbol_names) * len(all_dates)
 
         # フォントサイズを動的に調整（最小6ポイント）
+        # 常に千円単位で表示
         if total_cells < 400:
             fontsize = 8
-            value_format = '{:.0f}'
         elif total_cells < 800:
             fontsize = 7
-            value_format = '{:.0f}'
         else:
             fontsize = 6
-            # 値が大きい場合は千円単位で表示
-            value_format = '{:.0f}k' if total_cells > 1500 else '{:.0f}'
+
+        value_format = '{:.0f}'  # 千円単位の整数表示
 
         for i in range(len(symbol_names)):
             for j in range(len(all_dates)):
                 value = heatmap_matrix[i, j]
                 if value != 0:  # ゼロの場合は表示しない
-                    text_color = 'white' if abs(value) > vmax * 0.5 else 'black'
-                    # 値の表示（千円単位の場合は変換）
-                    if 'k' in value_format:
-                        display_value = value_format.format(value / 1000)
-                    else:
-                        display_value = value_format.format(value)
+                    # 正規化された値を使用してテキスト色を判定
+                    normalized_val = normalized_matrix[j, i]  # 転置後の座標
+                    text_color = 'white' if abs(normalized_val) > 0.5 else 'black'
+                    # 値を千円単位で表示
+                    display_value = value_format.format(value / 1000)
                     # 転置後の座標: (銘柄index, 日付index) → (日付index, 銘柄index)
                     ax.text(i, j, display_value,
                            ha='center', va='center', color=text_color, fontsize=fontsize)
 
         # 損切り（×）と利食い（○）のマーカーを表示
         for i, symbol_name in enumerate(symbol_names):
-            # Total列はスキップ
-            if symbol_name == '【Total】':
+            # 日次合計列はスキップ
+            if symbol_name == '【日次合計】':
                 continue
 
             # この銘柄の終了理由データを取得
@@ -537,9 +602,10 @@ class ReportGenerator:
                     reason = exit_reasons[date]
 
                     # マーカーの色を決定（背景の明るさに応じて）
-                    value = heatmap_matrix[i, j]
+                    # 正規化された値を使用
+                    normalized_val = normalized_matrix[j, i]  # 転置後の座標
                     # 背景が暗い（損失が大きい）場合は白、明るい（利益が大きい）場合は黒
-                    marker_color = 'white' if abs(value) > vmax * 0.5 else 'black'
+                    marker_color = 'white' if abs(normalized_val) > 0.5 else 'black'
 
                     if reason == 'loss':
                         # 損切り: × マーク（右上に配置）
