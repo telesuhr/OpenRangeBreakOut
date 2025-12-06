@@ -604,7 +604,7 @@ class ReportGenerator:
         else:
             fontsize = 6
 
-        value_format = '{:.0f}'  # 千円単位の整数表示
+        value_format = '{:,.0f}'  # 千円単位の整数表示（カンマ区切り）
 
         for i in range(len(symbol_names)):
             for j in range(len(all_dates)):
@@ -613,7 +613,7 @@ class ReportGenerator:
                     # 正規化された値を使用してテキスト色を判定
                     normalized_val = normalized_matrix[j, i]  # 転置後の座標
                     text_color = 'white' if abs(normalized_val) > 0.5 else 'black'
-                    # 値を千円単位で表示
+                    # 値を千円単位で表示（カンマ区切り）
                     display_value = value_format.format(value / 1000)
                     # 転置後の座標: (銘柄index, 日付index) → (日付index, 銘柄index)
                     ax.text(i, j, display_value,
